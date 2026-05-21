@@ -167,7 +167,7 @@ if __name__ == "__main__":
     path = "./Aerial_Landscapes"
     settings = {}
 
-    model = Model(path, epoch=100, learning_rate=0.001, momentum=0.9)
+    model = Model(path, epoch=10, learning_rate=0.001, momentum=0.9)
     model.train()
     model.test()
 
@@ -183,6 +183,7 @@ if __name__ == "__main__":
         classes[clazz].append(path)
 
     for clazz in classes:
+        plt.figure(figsize=(10, 10))
         for index, file in enumerate(clazz):
             plt.subplot(5, 5, index + 1)
             img = Image.open(file)
@@ -190,6 +191,7 @@ if __name__ == "__main__":
             plt.imshow(img)
             plt.axis('off')
         plt.show()
+
 
 #######################################################################################################################
 # Update                                                        Loss        Accuracy on val set  Comments
