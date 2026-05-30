@@ -1,6 +1,6 @@
+import csv
 import os
 
-import numpy as np
 import torch
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -14,10 +14,9 @@ class FilesUtil:
         self.labels = []
 
     def load_data(self, path):
-        for ci, class_name in enumerate(os.listdir(path)):
+        class_dirs = sorted(d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d)))
+        for ci, class_name in enumerate(class_dirs):
             class_dir = os.path.join(path, class_name)
-            if not os.path.isdir(class_dir):
-                continue
             for fname in os.listdir(class_dir):
                 if fname.lower().endswith(('.jpg', '.png', '.jpeg')):
                     fpath = os.path.join(class_dir, fname)
@@ -45,26 +44,30 @@ class LandDataset(Dataset):
         return img, self.labels[i]
 
     def load_data(self, path):
-        for ci, class_name in enumerate(os.listdir(path)):
+        class_dirs = sorted(d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d)))
+        for ci, class_name in enumerate(class_dirs):
             class_dir = os.path.join(path, class_name)
-            if not os.path.isdir(class_dir):
-                continue
             for fname in os.listdir(class_dir):
                 if fname.lower().endswith(('.jpg', '.png', '.jpeg')):
                     fpath = os.path.join(class_dir, fname)
                     self.files.append(fpath)
                     self.labels.append(ci)
 
+CLASS_NAMES = ['Agriculture', 'City', 'Dessert', 'Forest']
+
 class DatasetLoader:
     def __init__(self, data_path):
         self.full_dataset = LandDataset(data_path)
-        datasets = random_split(self.full_dataset, [0.7, 0.15, 0.15])
+        datasets = random_split(self.full_dataset, [0.8, 0.1, 0.1])
         self.train_dataset = datasets[0]
         self.val_dataset = datasets[1]
         self.test_dataset = datasets[2]
         self.train_loader = DataLoader(self.train_dataset, batch_size=32, shuffle=True)
         self.val_loader = DataLoader(self.val_dataset, batch_size=len(self.val_dataset), shuffle=False)
         self.test_loader = DataLoader(self.test_dataset, batch_size=len(self.test_dataset), shuffle=False)
+
+    def test_file_paths(self):
+        return [self.full_dataset.files[i] for i in self.test_dataset.indices]
 
 class NN(torch.nn.Module):
     def __init__(self):
@@ -141,16 +144,60 @@ class Model:
         plt.legend()
         plt.show()
 
-    def test(self):
+    def test(self, csv_path='error_analysis.csv'):
         print("Final testing...")
-        accuracies = []
-        for i, (X, Y) in enumerate(self.loader.test_loader):
-            y_val_pred = self.model(X)
-            classI = torch.argmax(y_val_pred, dim=1)
+        self.model.eval()
+        file_paths = self.loader.test_file_paths()
+        with torch.no_grad():
+            X, Y = next(iter(self.loader.test_loader))
+            logits = self.model(X)
+            predicted = torch.argmax(logits, dim=1)
 
-            correctAnswSum = (classI == Y).sum() / len(Y) * 100
-            accuracies.append(correctAnswSum)
-            print("Final %: ", correctAnswSum.item())
+        correct = (predicted == Y).sum().item()
+        print(f"Final accuracy: {correct / len(Y) * 100:.2f}%")
+
+        errors_per_class = [0] * len(CLASS_NAMES)
+        rows = []
+        img_number = 1
+        for idx in range(len(Y)):
+            true_cls = Y[idx].item()
+            pred_cls = predicted[idx].item()
+            if pred_cls == true_cls:
+                continue
+            one_hot = [1 if c == pred_cls else 0 for c in range(len(CLASS_NAMES))]
+            rows.append([img_number, true_cls] + one_hot + [''])
+            errors_per_class[true_cls] += 1
+            img_number += 1
+
+        total_errors = sum(errors_per_class)
+        if total_errors > 0:
+            error_pcts = [f"{(e / total_errors * 100):.1f}%" for e in errors_per_class]
+        else:
+            error_pcts = ['0.0%'] * len(CLASS_NAMES)
+
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Image #', 'OrigClass'] + CLASS_NAMES + ['Comments'])
+            writer.writerows(rows)
+            writer.writerow(['Error%', ''] + error_pcts + [''])
+
+        print(f"Error analysis saved to {csv_path} ({total_errors} misclassified out of {len(Y)})")
+
+        base, ext = os.path.splitext(csv_path)
+        for cls_idx, cls_name in enumerate(CLASS_NAMES):
+            cls_rows = [r for r in rows if r[1] == cls_idx]
+            cls_errors = len(cls_rows)
+            if cls_errors > 0:
+                cls_pcts = [f"{(sum(r[2 + c] for r in cls_rows) / cls_errors * 100):.1f}%" for c in range(len(CLASS_NAMES))]
+            else:
+                cls_pcts = ['0.0%'] * len(CLASS_NAMES)
+            cls_path = f"{base}_{cls_name.lower()}{ext}"
+            with open(cls_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Image #', 'OrigClass'] + CLASS_NAMES + ['Comments'])
+                writer.writerows(cls_rows)
+                writer.writerow(['Error%', ''] + cls_pcts + [''])
+            print(f"  {cls_name}: {cls_errors} errors → {cls_path}")
 
     def inference(self, file):
         img = Compose([
@@ -167,30 +214,30 @@ if __name__ == "__main__":
     path = "./Aerial_Landscapes"
     settings = {}
 
-    model = Model(path, epoch=10, learning_rate=0.001, momentum=0.9)
+    model = Model(path, epoch=50, learning_rate=0.001, momentum=0.9)
     model.train()
     model.test()
 
     # Беру всі зображення із датасету, перемішую їх і беру 60 штук. Далі проганяю їх через inference
     # там відображаю 4 плота із класифікованими зображеннями.
-    util = FilesUtil()
-    files = util.load_data(path)
-    np.random.shuffle(files)
-    files = files[:60]
-    classes = [[], [], [], []]
-    for index, path in enumerate(files):
-        clazz = model.inference(path)
-        classes[clazz].append(path)
-
-    for clazz in classes:
-        plt.figure(figsize=(10, 10))
-        for index, file in enumerate(clazz):
-            plt.subplot(5, 5, index + 1)
-            img = Image.open(file)
-            img = np.array(img)
-            plt.imshow(img)
-            plt.axis('off')
-        plt.show()
+    # util = FilesUtil()
+    # files = util.load_data(path)
+    # np.random.shuffle(files)
+    # files = files[:60]
+    # classes = [[], [], [], []]
+    # for index, path in enumerate(files):
+    #     clazz = model.inference(path)
+    #     classes[clazz].append(path)
+    #
+    # for clazz in classes:
+    #     plt.figure(figsize=(10, 10))
+    #     for index, file in enumerate(clazz):
+    #         plt.subplot(5, 5, index + 1)
+    #         img = Image.open(file)
+    #         img = np.array(img)
+    #         plt.imshow(img)
+    #         plt.axis('off')
+    #     plt.show()
 
 
 #######################################################################################################################
@@ -208,5 +255,10 @@ if __name__ == "__main__":
 # Mini-Batch (32) Momentum 300 epoch, Dropout 0.5, LR=0.001     0.3010      82.0833              Dropout не допомогім
 # Mini-Batch (32) RMSprop  300 epoch, Dropout 0.5, LR=0.001     0.1693      83.1250              RMSprop
 # Mini-Batch (32) Adam     300 epoch, LR=0.001                  0.0366      80.8333              Adam
-# Залашаю Mini-Batch із Momentum, із ним результати найстабільніші. 80% на тестовому наборі, схоже це потолок на поточних даних і на поточній архітектурі.
+# Залишаю Mini-Batch із Momentum, із ним результати найстабільніші. 80% на тестовому наборі, схоже це потолок на поточних даних і на поточній архітектурі.
 # Далі треба переходити на CNN.
+
+# Додав augment.py який на основі кожного зображення генерує 3 додаткові, завдяку повороту зображення. Для фото із супутників працює добре.
+# Завдяки додатковим даним вийшли підняти точність до 88.20%.
+
+# Також додав генерацію репортів по помилкам по кожному із класів для додаткового аналізу проблемних зображень.
